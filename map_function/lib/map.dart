@@ -1,184 +1,159 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:firebase_database/firebase_database.dart';
+import 'dart:convert';
+import 'dart:io';
 
-class MapScreen extends StatefulWidget {
-  const MapScreen({Key? key}) : super(key: key);
-
+class ParkBlueprintScreen extends StatefulWidget {
   @override
-  _MapScreenState createState() => _MapScreenState();
+  _ParkBlueprintScreenState createState() => _ParkBlueprintScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> {
-  late GoogleMapController _mapController;
-  final Set<Marker> _markers = {};
-  final Set<Polyline> _polylines = {};
-  final List<LatLng> _polylineCoordinates = [];
-  final DatabaseReference _databaseReference = FirebaseDatabase.instance.ref().child('locations');
-  final String apiKey = 'YOUR_API_KEY_HERE'; // Replace with your OpenRouteService API key
+class _ParkBlueprintScreenState extends State<ParkBlueprintScreen> {
+  List<Offset> dustbinLocations = [];
+  double imageWidth = 1000.0;  // Blueprint image width in pixels
+  double imageHeight = 500.0;  // Blueprint image height in pixels
+  double realWorldLength = 200.0;  // Real-world length in meterszy
+  double realWorldBreadth = 100.0;  // Real-world breadth in meters
+  double scaleFactor = 1.0;  // Scale factor of the blueprint image
 
   @override
   void initState() {
     super.initState();
-    _fetchLocationsFromFirebase();
+    _loadCoordinates();
   }
 
-  Future<void> _fetchLocationsFromFirebase() async {
-    try {
-      DataSnapshot snapshot = (await _databaseReference.once()).snapshot;
-      if (snapshot.exists) {
-        print('Data exists in Firebase.');
-        List<dynamic>? locations = snapshot.value as List<dynamic>?;
-        if (locations != null && locations.isNotEmpty) {
-          print('Locations are not empty.');
-          setState(() {
-            _markers.clear();
-            _polylines.clear();
-          });
-          for (var location in locations) {
-            double? lat = location['latitude'];
-            double? lng = location['longitude'];
-            String? title = location['name'];
-            
-            // Check if any value is null
-            if (lat == null || lng == null || title == null) {
-              print('Invalid location data: $location');
-              continue;
-            }
-
-            print('Adding marker: $title at ($lat, $lng)');
-
-            setState(() {
-              _markers.add(Marker(
-                markerId: MarkerId(title),
-                position: LatLng(lat, lng),
-                infoWindow: InfoWindow(title: title),
-              ));
-            });
-          }
-
-          if (_markers.length > 1) {
-            List<LatLng> markerPositions = _markers.map((marker) => marker.position).toList();
-            _fitMarkersToBounds(markerPositions);
-            await _fetchAllRoutes(markerPositions);
-          }
-        } else {
-          print('Locations list is empty.');
-        }
-      } else {
-        print('Snapshot does not exist.');
-      }
-    } catch (e) {
-      print('Error fetching locations from Firebase: $e');
-    }
+  void _addDustbinLocation(TapDownDetails details) {
+    setState(() {
+      dustbinLocations.add(details.localPosition);
+    });
+    _saveCoordinates();
   }
 
-Future<void> _fetchAllRoutes(List<LatLng> markerPositions) async {
-  try {
-    // Ensure at least two markers are available
-    if (markerPositions.length < 2) {
-      print('Not enough markers to fetch routes.');
-      return;
-    }
-
-    // Fetch route for the first pair of markers
-    LatLng start = markerPositions[0];
-    LatLng end = markerPositions[1];
-    await _fetchRoute(start, end);
-  } catch (e) {
-    print('Error in fetching routes: $e');
+  void _removeDustbinLocation(Offset position) {
+    setState(() {
+      dustbinLocations.remove(position);
+    });
+    _saveCoordinates();
   }
-}
 
-Future<void> _fetchRoute(LatLng start, LatLng end) async {
-  try {
-    Uri routeUrl = Uri.parse(
-        'https://api.openrouteservice.org/v2/directions/driving-car?api_key=$apiKey&start=${start.longitude},${start.latitude}&end=${end.longitude},${end.latitude}');
-
-    final response = await http.get(routeUrl);
-    print('Fetching polyline data from URL: $routeUrl');
-    
-    if (response.statusCode == 200) {
-      final jsonResponse = json.decode(response.body);
-      List<dynamic> features = jsonResponse['features'];
-      
-      if (features.isNotEmpty) {
-        List<dynamic> points = features[0]['geometry']['coordinates'];
-        List<LatLng> polylinePoints = points.map((point) => LatLng(point[1], point[0])).toList();
-        
-        setState(() {
-          _polylines.clear(); // Clear existing polylines
-          _polylines.add(Polyline(
-            polylineId: PolylineId('route'), // Use a fixed ID for the polyline
-            points: polylinePoints,
-            color: Colors.blue,
-            width: 5,
-          ));
-        });
-        
-        print('Polyline added with ${polylinePoints.length} points.');
-      } else {
-        print('No route features found in response.');
-      }
-    } else {
-      print('Failed to fetch route, status code: ${response.statusCode}');
-      print('Response body: ${response.body}');
-    }
-  } catch (e) {
-    print('Error in fetching route: $e');
+  void _saveCoordinates() async {
+    final file = File('dustbin_locations.json');
+    final jsonString = jsonEncode(dustbinLocations.map((e) => {'x': e.dx, 'y': e.dy}).toList());
+    await file.writeAsString(jsonString);
   }
-}
 
+  void _loadCoordinates() async {
+    final file = File('dustbin_locations.json');
+    if (!file.existsSync()) return;
+    final jsonString = await file.readAsString();
+    final List<dynamic> jsonList = jsonDecode(jsonString);
+    setState(() {
+      dustbinLocations = jsonList.map((e) => Offset(e['x'], e['y'])).toList();
+    });
+  }
 
-
-
-  void _fitMarkersToBounds(List<LatLng> markerPositions) {
-    LatLngBounds bounds;
-    if (markerPositions.length == 1) {
-      bounds = LatLngBounds(
-        southwest: markerPositions.first,
-        northeast: markerPositions.first,
-      );
-    } else {
-      bounds = LatLngBounds(
-        southwest: LatLng(
-          markerPositions.map((pos) => pos.latitude).reduce((a, b) => a < b ? a : b),
-          markerPositions.map((pos) => pos.longitude).reduce((a, b) => a < b ? a : b),
-        ),
-        northeast: LatLng(
-          markerPositions.map((pos) => pos.latitude).reduce((a, b) => a > b ? a : b),
-          markerPositions.map((pos) => pos.longitude).reduce((a, b) => a > b ? a : b),
-        ),
-      );
-    }
-    _mapController.animateCamera(CameraUpdate.newLatLngBounds(bounds, 100));
+  Offset convertToRealWorldCoordinates(Offset offset) {
+    double scaleX = realWorldLength / (imageWidth * scaleFactor);
+    double scaleY = realWorldBreadth / (imageHeight * scaleFactor);
+    return Offset(offset.dx * scaleX, offset.dy * scaleY);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Map'),
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: GoogleMap(
-              initialCameraPosition: const CameraPosition(
-                target: LatLng(0, 0), // Initial map center, can be any default location
-                zoom: 10.0, // Initial zoom level
-              ),
-              onMapCreated: (GoogleMapController controller) {
-                _mapController = controller;
-              },
-              markers: _markers,
-              polylines: _polylines,
-            ),
+        title: Text('Park Blueprint'),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.settings),
+            onPressed: () {
+              _showSettingsDialog();
+            },
           ),
         ],
       ),
+      body: Center(
+        child: GestureDetector(
+          onTapDown: _addDustbinLocation,
+          child: InteractiveViewer(
+            child: Stack(
+              children: [
+                Image.asset('assets/images/image.jpg', width: imageWidth, height: imageHeight),
+                ...dustbinLocations.map((location) {
+                  Offset realWorldLocation = convertToRealWorldCoordinates(location);
+                  return Positioned(
+                    left: location.dx,
+                    top: location.dy,
+                    child: GestureDetector(
+                      onDoubleTap: () {
+                        _removeDustbinLocation(location);
+                      },
+                      child: Icon(
+                        Icons.delete,
+                        color: Colors.red,
+                        size: 30.0,
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
+
+  void _showSettingsDialog() {
+    TextEditingController lengthController = TextEditingController(text: realWorldLength.toString());
+    TextEditingController breadthController = TextEditingController(text: realWorldBreadth.toString());
+    TextEditingController scaleController = TextEditingController(text: scaleFactor.toString());
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Settings'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: lengthController,
+                decoration: InputDecoration(labelText: 'Real-world Length (meters)'),
+                keyboardType: TextInputType.number,
+              ),
+              TextField(
+                controller: breadthController,
+                decoration: InputDecoration(labelText: 'Real-world Breadth (meters)'),
+                keyboardType: TextInputType.number,
+              ),
+              TextField(
+                controller: scaleController,
+                decoration: InputDecoration(labelText: 'Scale Factor'),
+                keyboardType: TextInputType.number,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  realWorldLength = double.parse(lengthController.text);
+                  realWorldBreadth = double.parse(breadthController.text);
+                  scaleFactor = double.parse(scaleController.text);
+                });
+                Navigator.of(context).pop();
+              },
+              child: Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+void main() {
+  runApp(MaterialApp(
+    home: ParkBlueprintScreen(),
+  ));
 }
